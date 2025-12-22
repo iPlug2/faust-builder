@@ -114,6 +114,7 @@ def main():
             "sdk": "iphoneos",
             "platform": "iphoneos",
             "target": "arm64-apple-ios",
+            "arch": "arm64",
             "min_version": "14.0"
         },
         {
@@ -121,6 +122,7 @@ def main():
             "sdk": "iphonesimulator",
             "platform": "iphonesimulator",
             "target": "arm64-apple-ios-simulator",
+            "arch": "arm64",
             "min_version": "14.0"
         },
         {
@@ -128,6 +130,7 @@ def main():
             "sdk": "xros",
             "platform": "xros",
             "target": "arm64-apple-xros",
+            "arch": "arm64",
             "min_version": "1.0"
         },
         # {
@@ -135,8 +138,27 @@ def main():
         #     "sdk": "xros",
         #     "platform": "xros-simulator",
         #     "target": "arm64-apple-xros-simulator",
+        #     "arch": "arm64",
         #     "min_version": "1.0"
         # }
+        {
+            "name": "macos_arm64",
+            "sdk": "macosx",
+            "platform": "macosx",
+            "target": "arm64-apple-macos",
+            "arch": "arm64",
+            "min_version": "11.0",
+            "is_macos": True
+        },
+        {
+            "name": "macos_x86_64",
+            "sdk": "macosx",
+            "platform": "macosx",
+            "target": "x86_64-apple-macos",
+            "arch": "x86_64",
+            "min_version": "11.0",
+            "is_macos": True
+        },
     ]
     
     # Build for each platform
@@ -148,33 +170,38 @@ def main():
         platform_build_dir.mkdir(parents=True, exist_ok=True)
         
         # Create a temporary CMake cache file for this platform
+        arch = platform['arch']
+        is_macos = platform.get('is_macos', False)
         cmake_cache_file = platform_build_dir / "platform.cmake"
         with open(cmake_cache_file, "w") as f:
-            f.write(f"set(CMAKE_XCODE_EFFECTIVE_PLATFORMS \"{platform['platform']}\" CACHE STRING \"\" FORCE)\n")
             f.write(f"set(CMAKE_OSX_SYSROOT \"{platform['sdk']}\" CACHE STRING \"\" FORCE)\n")
-            f.write(f"set(CMAKE_OSX_ARCHITECTURES \"arm64\" CACHE STRING \"\" FORCE)\n")
+            f.write(f"set(CMAKE_OSX_ARCHITECTURES \"{arch}\" CACHE STRING \"\" FORCE)\n")
             f.write(f"set(CMAKE_OSX_DEPLOYMENT_TARGET \"{platform['min_version']}\" CACHE STRING \"\" FORCE)\n")
-            f.write(f"set(CMAKE_SYSTEM_NAME \"{platform['platform']}\" CACHE STRING \"\" FORCE)\n")
-            f.write(f"set(CMAKE_SYSTEM_PROCESSOR \"arm64\" CACHE STRING \"\" FORCE)\n")
+            f.write(f"set(CMAKE_SYSTEM_PROCESSOR \"{arch}\" CACHE STRING \"\" FORCE)\n")
             f.write(f"set(CMAKE_C_COMPILER \"clang\" CACHE STRING \"\" FORCE)\n")
             f.write(f"set(CMAKE_CXX_COMPILER \"clang++\" CACHE STRING \"\" FORCE)\n")
-            # f.write(f"set(CMAKE_C_FLAGS \"-isysroot $(SDKROOT) -target {platform['target']}\" CACHE STRING \"\" FORCE)\n")
-            # f.write(f"set(CMAKE_CXX_FLAGS \"-isysroot $(SDKROOT) -target {platform['target']}\" CACHE STRING \"\" FORCE)\n")
-            # f.write(f"set(CMAKE_EXE_LINKER_FLAGS \"-isysroot $(SDKROOT) -target {platform['target']}\" CACHE STRING \"\" FORCE)\n")
-            # f.write(f"set(CMAKE_SHARED_LINKER_FLAGS \"-isysroot $(SDKROOT) -target {platform['target']}\" CACHE STRING \"\" FORCE)\n")
-            # f.write(f"set(CMAKE_STATIC_LINKER_FLAGS \"-isysroot $(SDKROOT) -target {platform['target']}\" CACHE STRING \"\" FORCE)\n")
-            # Add these lines to fix the libtool issue
-            f.write(f"set(CMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH \"NO\" CACHE STRING \"\" FORCE)\n")
-            f.write(f"set(CMAKE_XCODE_ATTRIBUTE_ENABLE_BITCODE \"NO\" CACHE STRING \"\" FORCE)\n")
-            f.write(f"set(CMAKE_XCODE_ATTRIBUTE_VALID_ARCHS \"arm64\" CACHE STRING \"\" FORCE)\n")
-            f.write(f"set(CMAKE_XCODE_ATTRIBUTE_ARCHS \"arm64\" CACHE STRING \"\" FORCE)\n")
-            f.write(f"set(CMAKE_XCODE_ATTRIBUTE_SKIP_INSTALL \"YES\" CACHE STRING \"\" FORCE)\n")
-            f.write(f"set(CMAKE_XCODE_ATTRIBUTE_BUILD_LIBRARY_FOR_DISTRIBUTION \"YES\" CACHE STRING \"\" FORCE)\n")
-            # Fix for libtool issue - don't pass -arch to libtool
-            f.write(f"set(CMAKE_XCODE_ATTRIBUTE_OTHER_LDFLAGS \"-isysroot $(SDKROOT) -target {platform['target']}\" CACHE STRING \"\" FORCE)\n")
-            f.write(f"set(CMAKE_XCODE_ATTRIBUTE_OTHER_CFLAGS \"-isysroot $(SDKROOT) -target {platform['target']}\" CACHE STRING \"\" FORCE)\n")
-            f.write(f"set(CMAKE_XCODE_ATTRIBUTE_OTHER_CPLUSPLUSFLAGS \"-isysroot $(SDKROOT) -target {platform['target']}\" CACHE STRING \"\" FORCE)\n")
-            
+
+            if is_macos:
+                # macOS-specific settings - simpler configuration
+                f.write(f"set(CMAKE_SYSTEM_NAME \"Darwin\" CACHE STRING \"\" FORCE)\n")
+                # Override the IOS flag from backend.cmake
+                f.write(f"set(IOS OFF CACHE BOOL \"Compiles for iOS\" FORCE)\n")
+            else:
+                # iOS/visionOS-specific settings
+                f.write(f"set(CMAKE_XCODE_EFFECTIVE_PLATFORMS \"{platform['platform']}\" CACHE STRING \"\" FORCE)\n")
+                f.write(f"set(CMAKE_SYSTEM_NAME \"{platform['platform']}\" CACHE STRING \"\" FORCE)\n")
+                # Add these lines to fix the libtool issue
+                f.write(f"set(CMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH \"NO\" CACHE STRING \"\" FORCE)\n")
+                f.write(f"set(CMAKE_XCODE_ATTRIBUTE_ENABLE_BITCODE \"NO\" CACHE STRING \"\" FORCE)\n")
+                f.write(f"set(CMAKE_XCODE_ATTRIBUTE_VALID_ARCHS \"{arch}\" CACHE STRING \"\" FORCE)\n")
+                f.write(f"set(CMAKE_XCODE_ATTRIBUTE_ARCHS \"{arch}\" CACHE STRING \"\" FORCE)\n")
+                f.write(f"set(CMAKE_XCODE_ATTRIBUTE_SKIP_INSTALL \"YES\" CACHE STRING \"\" FORCE)\n")
+                f.write(f"set(CMAKE_XCODE_ATTRIBUTE_BUILD_LIBRARY_FOR_DISTRIBUTION \"YES\" CACHE STRING \"\" FORCE)\n")
+                # Fix for libtool issue - don't pass -arch to libtool
+                f.write(f"set(CMAKE_XCODE_ATTRIBUTE_OTHER_LDFLAGS \"-isysroot $(SDKROOT) -target {platform['target']}\" CACHE STRING \"\" FORCE)\n")
+                f.write(f"set(CMAKE_XCODE_ATTRIBUTE_OTHER_CFLAGS \"-isysroot $(SDKROOT) -target {platform['target']}\" CACHE STRING \"\" FORCE)\n")
+                f.write(f"set(CMAKE_XCODE_ATTRIBUTE_OTHER_CPLUSPLUSFLAGS \"-isysroot $(SDKROOT) -target {platform['target']}\" CACHE STRING \"\" FORCE)\n")
+
             # Set output directories to prevent building in the source directory
             f.write(f"set(CMAKE_RUNTIME_OUTPUT_DIRECTORY \"{platform_build_dir}/bin\" CACHE PATH \"\" FORCE)\n")
             f.write(f"set(CMAKE_LIBRARY_OUTPUT_DIRECTORY \"{platform_build_dir}/lib\" CACHE PATH \"\" FORCE)\n")
@@ -191,18 +218,22 @@ def main():
             f.write(f"set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG \"{platform_build_dir}/bin\" CACHE PATH \"\" FORCE)\n")
             f.write(f"set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG \"{platform_build_dir}/lib\" CACHE PATH \"\" FORCE)\n")
             f.write(f"set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG \"{platform_build_dir}/lib\" CACHE PATH \"\" FORCE)\n")
-        
+
         # Create CMake build directory
         cmake_build_dir = platform_build_dir / "cmake_build"
         cmake_build_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        # Use different generator for macOS vs iOS/visionOS
+        generator = "Unix Makefiles" if is_macos else "Xcode"
+
         # Run CMake with absolute paths
-        run_command([
-            "cmake", 
-            "-C", str(current_dir / "backend.cmake"), 
-            "-C", str(current_dir / "target.cmake"), 
+        cmake_args = [
+            "cmake",
+            "-C", str(current_dir / "backend.cmake"),
+            "-C", str(current_dir / "target.cmake"),
             "-C", str(cmake_cache_file),
-            "-G", "Xcode",
+            "-G", generator,
+            "-DCMAKE_BUILD_TYPE=MinSizeRel",
             "-DINCLUDE_STATIC=ON",
             "-DINCLUDE_EXECUTABLE=OFF",
             "-DINCLUDE_DYNAMIC=OFF",
@@ -213,17 +244,29 @@ def main():
             "-DINCLUDE_WASM_GLUE=OFF",
             "-DLINK_LLVM_STATIC=ON",
             "-DINCLUDE_LLVM_STATIC_IN_ARCHIVE=ON",
-            str(current_dir / "faust" / "build")
-        ], cwd=cmake_build_dir)
-        
-        # Build the static library
-        run_command([
-            "cmake", 
-            "--build", str(cmake_build_dir), 
-            "--target", "staticlib", 
-            "--config", "MinSizeRel", 
-            "--", "-j", "10"
-        ])
+        ]
+        # For macOS, disable iOS mode
+        if is_macos:
+            cmake_args.append("-DIOS=OFF")
+        cmake_args.append(str(current_dir / "faust" / "build"))
+        run_command(cmake_args, cwd=cmake_build_dir)
+
+        # Build the static library - different args for different generators
+        if is_macos:
+            run_command([
+                "cmake",
+                "--build", str(cmake_build_dir),
+                "--target", "staticlib",
+                "--", "-j", "10"
+            ])
+        else:
+            run_command([
+                "cmake",
+                "--build", str(cmake_build_dir),
+                "--target", "staticlib",
+                "--config", "MinSizeRel",
+                "--", "-j", "10"
+            ])
         
         # Install the static library
         # install_dir = platform_build_dir / "install"
@@ -248,22 +291,32 @@ def main():
     
     # Create a simple script to build the XCFramework - with unique library names
     temp_dir = tempfile.mkdtemp()
-    
+
     # Copy libraries with unique names
     ios_unique = Path(temp_dir) / "ios_libfaust.a"
     ios_sim_unique = Path(temp_dir) / "ios_sim_libfaust.a"
     xros_unique = Path(temp_dir) / "xros_libfaust.a"
     # xros_sim_unique = Path(temp_dir) / "xros_sim_libfaust.a"
-    
+    macos_unique = Path(temp_dir) / "macos_libfaust.a"
+
     shutil.copy(build_dir / "ios" / "lib" / "libfaust.a", ios_unique)
     shutil.copy(build_dir / "ios_simulator" / "lib" / "libfaust.a", ios_sim_unique)
     shutil.copy(build_dir / "xros" / "lib" / "libfaust.a", xros_unique)
     # shutil.copy(build_dir / "xros_simulator" / "lib" / "libfaust.a", xros_sim_unique)
-    
+
+    # Create universal macOS binary using lipo
+    print("Creating universal macOS binary...")
+    run_command([
+        "lipo", "-create",
+        str(build_dir / "macos_arm64" / "lib" / "libfaust.a"),
+        str(build_dir / "macos_x86_64" / "lib" / "libfaust.a"),
+        "-output", str(macos_unique)
+    ])
+
     xcframework_path = build_dir / "LibFaust.xcframework"
     if xcframework_path.exists():
         shutil.rmtree(xcframework_path)
-    
+
     # Execute xcodebuild directly
     run_command([
         "xcodebuild", "-create-xcframework",
@@ -271,6 +324,7 @@ def main():
         "-library", str(ios_sim_unique), "-headers", str(headers_dir),
         "-library", str(xros_unique), "-headers", str(headers_dir),
         # "-library", str(xros_sim_unique), "-headers", str(headers_dir),
+        "-library", str(macos_unique), "-headers", str(headers_dir),
         "-output", str(xcframework_path)
     ])
 
