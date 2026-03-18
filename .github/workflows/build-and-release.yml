@@ -1,0 +1,98 @@
+name: Build and Release LibFaust
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create a GitHub release'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  build:
+    runs-on: macos-14  # Apple Silicon runner for all Apple platform builds
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build LibFaust XCFramework
+        run: python3 build.py
+
+      - name: Package XCFramework
+        run: |
+          cd build
+          # Create XCFramework zip
+          zip -r LibFaust.xcframework.zip LibFaust.xcframework
+          # Create headers tarball
+          tar -czf libfaust-headers.tar.gz headers/
+          # List artifacts
+          ls -la *.zip *.tar.gz
+
+      - name: Upload XCFramework artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LibFaust.xcframework
+          path: build/LibFaust.xcframework.zip
+          retention-days: 30
+
+      - name: Upload Headers artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libfaust-headers
+          path: build/libfaust-headers.tar.gz
+          retention-days: 30
+
+      - name: Get Faust version
+        id: faust_version
+        run: |
+          FAUST_VERSION=$(grep "set (VERSION" faust/build/CMakeLists.txt | sed 's/.*VERSION \([0-9.]*\).*/\1/')
+          echo "version=${FAUST_VERSION}" >> $GITHUB_OUTPUT
+          echo "Faust version: ${FAUST_VERSION}"
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            build/LibFaust.xcframework.zip
+            build/libfaust-headers.tar.gz
+          body: |
+            ## LibFaust XCFramework
+
+            Pre-built libfaust static library for Apple platforms.
+
+            **Faust Compiler Version:** ${{ steps.faust_version.outputs.version }}
+
+            ### Platforms Included
+            - macOS (arm64 + x86_64 universal binary)
+            - iOS (arm64)
+            - iOS Simulator (arm64)
+            - visionOS (arm64)
+
+            ### Backends Enabled
+            - C++ backend
+            - Interpreter backend (static)
+
+            ### Usage
+
+            Extract the XCFramework and point your build system to:
+            - **Headers:** `LibFaust.xcframework/Headers/`
+            - **Library:** `LibFaust.xcframework/<platform>/LibFaust.a`
+          draft: false
+          generate_release_notes: true
+          tag_name: ${{ github.ref_name || format('v{0}', github.run_number) }}
