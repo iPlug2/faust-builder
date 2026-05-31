@@ -17,7 +17,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14  # Apple Silicon runner for all Apple platform builds
+    runs-on: macos-15  # Apple Silicon runner with current visionOS SDK support
 
     steps:
       - name: Checkout repository
@@ -29,6 +29,15 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Verify Apple platform SDKs
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --sdk iphonesimulator --show-sdk-path
+          xcrun --sdk xros --show-sdk-path
+          xcrun --sdk xrsimulator --show-sdk-path
+          xcrun --sdk macosx --show-sdk-path
 
       - name: Build LibFaust XCFramework
         run: python3 build.py
@@ -83,6 +92,7 @@ jobs:
             - iOS (arm64)
             - iOS Simulator (arm64)
             - visionOS (arm64)
+            - visionOS Simulator (arm64)
 
             ### Backends Enabled
             - C++ backend

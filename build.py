@@ -133,14 +133,15 @@ def main():
             "arch": "arm64",
             "min_version": "1.0"
         },
-        # {
-        #     "name": "xros_simulator",
-        #     "sdk": "xros",
-        #     "platform": "xros-simulator",
-        #     "target": "arm64-apple-xros-simulator",
-        #     "arch": "arm64",
-        #     "min_version": "1.0"
-        # }
+        {
+            "name": "xros_simulator",
+            "sdk": "xrsimulator",
+            "platform": "xrsimulator",
+            "system_name": "xros",
+            "target": "arm64-apple-xros-simulator",
+            "arch": "arm64",
+            "min_version": "1.0"
+        },
         {
             "name": "macos_arm64",
             "sdk": "macosx",
@@ -189,7 +190,8 @@ def main():
             else:
                 # iOS/visionOS-specific settings
                 f.write(f"set(CMAKE_XCODE_EFFECTIVE_PLATFORMS \"{platform['platform']}\" CACHE STRING \"\" FORCE)\n")
-                f.write(f"set(CMAKE_SYSTEM_NAME \"{platform['platform']}\" CACHE STRING \"\" FORCE)\n")
+                system_name = platform.get('system_name', platform['platform'])
+                f.write(f"set(CMAKE_SYSTEM_NAME \"{system_name}\" CACHE STRING \"\" FORCE)\n")
                 # Add these lines to fix the libtool issue
                 f.write(f"set(CMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH \"NO\" CACHE STRING \"\" FORCE)\n")
                 f.write(f"set(CMAKE_XCODE_ATTRIBUTE_ENABLE_BITCODE \"NO\" CACHE STRING \"\" FORCE)\n")
@@ -296,13 +298,13 @@ def main():
     ios_unique = Path(temp_dir) / "ios_libfaust.a"
     ios_sim_unique = Path(temp_dir) / "ios_sim_libfaust.a"
     xros_unique = Path(temp_dir) / "xros_libfaust.a"
-    # xros_sim_unique = Path(temp_dir) / "xros_sim_libfaust.a"
+    xros_sim_unique = Path(temp_dir) / "xros_sim_libfaust.a"
     macos_unique = Path(temp_dir) / "macos_libfaust.a"
 
     shutil.copy(build_dir / "ios" / "lib" / "libfaust.a", ios_unique)
     shutil.copy(build_dir / "ios_simulator" / "lib" / "libfaust.a", ios_sim_unique)
     shutil.copy(build_dir / "xros" / "lib" / "libfaust.a", xros_unique)
-    # shutil.copy(build_dir / "xros_simulator" / "lib" / "libfaust.a", xros_sim_unique)
+    shutil.copy(build_dir / "xros_simulator" / "lib" / "libfaust.a", xros_sim_unique)
 
     # Create universal macOS binary using lipo
     print("Creating universal macOS binary...")
@@ -323,7 +325,7 @@ def main():
         "-library", str(ios_unique), "-headers", str(headers_dir),
         "-library", str(ios_sim_unique), "-headers", str(headers_dir),
         "-library", str(xros_unique), "-headers", str(headers_dir),
-        # "-library", str(xros_sim_unique), "-headers", str(headers_dir),
+        "-library", str(xros_sim_unique), "-headers", str(headers_dir),
         "-library", str(macos_unique), "-headers", str(headers_dir),
         "-output", str(xcframework_path)
     ])
