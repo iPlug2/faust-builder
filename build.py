@@ -115,7 +115,7 @@ def main():
             "platform": "iphoneos",
             "target": "arm64-apple-ios",
             "arch": "arm64",
-            "min_version": "14.0"
+            "min_version": "15.0"
         },
         {
             "name": "ios_simulator",
@@ -123,7 +123,7 @@ def main():
             "platform": "iphonesimulator",
             "target": "arm64-apple-ios-simulator",
             "arch": "arm64",
-            "min_version": "14.0"
+            "min_version": "15.0"
         },
         {
             "name": "xros",
