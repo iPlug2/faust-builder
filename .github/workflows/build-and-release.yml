@@ -17,7 +17,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15  # Apple Silicon runner with current visionOS SDK support
+    runs-on: macos-26  # Apple Silicon runner with current visionOS SDK support
 
     steps:
       - name: Checkout repository
@@ -30,6 +30,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
       - name: Verify Apple platform SDKs
         run: |
           xcodebuild -version
@@ -41,6 +44,70 @@ jobs:
 
       - name: Build LibFaust XCFramework
         run: python3 build.py
+
+      # build.py's run_command() prints errors but does not raise, so a failed
+      # cmake configure/build can leave a partial XCFramework behind. Assert the
+      # shape of the output rather than trusting the exit code.
+      - name: Verify XCFramework slices
+        run: |
+          set -euo pipefail
+          XCF=build/LibFaust.xcframework
+
+          fail=0
+
+          # slice dir : library name : expected LC_BUILD_VERSION platform : expected archs
+          while IFS=: read -r slice lib want_platform want_archs_csv; do
+            [ -n "$slice" ] || continue
+            want_archs=$(echo "$want_archs_csv" | tr ',' '\n' | sort | tr '\n' ' ')
+
+            path="$XCF/$slice/$lib"
+            if [ ! -f "$path" ]; then
+              echo "::error::missing slice $slice/$lib"
+              fail=1
+              continue
+            fi
+
+            bad=0
+            got_archs=$(lipo -archs "$path" | tr ' ' '\n' | sort | tr '\n' ' ')
+            if [ "$got_archs" != "$want_archs" ]; then
+              echo "::error::$slice archs: want [$want_archs] got [$got_archs]"
+              bad=1
+            fi
+
+            # Every object in the archive must target the expected platform, so a
+            # slice silently built against the wrong SDK does not ship.
+            got_platforms=$(otool -l "$path" \
+              | grep -A4 LC_BUILD_VERSION \
+              | awk '/ platform / {print $2}' \
+              | sort -u | tr '\n' ' ' | sed 's/ $//')
+            if [ "$got_platforms" != "$want_platform" ]; then
+              echo "::error::$slice platform: want [$want_platform] got [$got_platforms]"
+              bad=1
+            fi
+
+            if [ "$bad" -eq 0 ]; then
+              echo "ok: $slice ($got_archs platform $got_platforms)"
+            else
+              fail=1
+            fi
+          done <<'SLICES'
+          ios-arm64:ios_libfaust.a:2:arm64
+          ios-arm64-simulator:ios_sim_libfaust.a:7:arm64
+          xros-arm64:xros_libfaust.a:11:arm64
+          xros-arm64-simulator:xros_sim_libfaust.a:12:arm64
+          macos-arm64_x86_64:macos_libfaust.a:1:arm64,x86_64
+          SLICES
+
+          # Public headers are hand-enumerated in build.py and only warn when absent.
+          header_count=$(find build/headers -type f | wc -l | tr -d ' ')
+          echo "headers: $header_count file(s)"
+          if [ "$header_count" -eq 0 ]; then
+            echo "::error::no headers were emitted to build/headers"
+            fail=1
+          fi
+
+          codesign -v "$XCF"
+          exit $fail
 
       - name: Package XCFramework
         run: |
@@ -75,7 +142,7 @@ jobs:
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             build/LibFaust.xcframework.zip
@@ -88,11 +155,14 @@ jobs:
             **Faust Compiler Version:** ${{ steps.faust_version.outputs.version }}
 
             ### Platforms Included
-            - macOS (arm64 + x86_64 universal binary)
-            - iOS (arm64)
-            - iOS Simulator (arm64)
-            - visionOS (arm64)
-            - visionOS Simulator (arm64)
+
+            | Slice | Architectures | Minimum OS |
+            |---|---|---|
+            | `macos-arm64_x86_64` | arm64 + x86_64 (universal) | macOS 11.0 |
+            | `ios-arm64` | arm64 | iOS 15.0 |
+            | `ios-arm64-simulator` | arm64 | iOS 15.0 |
+            | `xros-arm64` | arm64 | visionOS 1.0 |
+            | `xros-arm64-simulator` | arm64 | visionOS 1.0 |
 
             ### Backends Enabled
             - C++ backend
@@ -100,9 +170,15 @@ jobs:
 
             ### Usage
 
-            Extract the XCFramework and point your build system to:
-            - **Headers:** `LibFaust.xcframework/Headers/`
-            - **Library:** `LibFaust.xcframework/<platform>/LibFaust.a`
+            Two separate downloads — the XCFramework carries no headers.
+
+            - **Headers:** extract `libfaust-headers.tar.gz` and add the
+              resulting `headers/` directory to your include path.
+            - **Library:** extract `LibFaust.xcframework.zip`. Each slice uses a
+              distinct library basename (required by `xcodebuild
+              -create-xcframework`), e.g.
+              `LibFaust.xcframework/ios-arm64/ios_libfaust.a`. Link the
+              `.xcframework` itself and let Xcode select the slice.
           draft: false
           generate_release_notes: true
           tag_name: ${{ github.ref_name || format('v{0}', github.run_number) }}
