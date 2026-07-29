@@ -181,4 +181,7 @@ jobs:
               `.xcframework` itself and let Xcode select the slice.
           draft: false
           generate_release_notes: true
-          tag_name: ${{ github.ref_name || format('v{0}', github.run_number) }}
+          # github.ref_name is the branch name on workflow_dispatch, so a bare
+          # `github.ref_name || ...` fallback never fires and tags the release
+          # after the branch. Only trust ref_name when the ref really is a tag.
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', steps.faust_version.outputs.version) }}
