@@ -136,6 +136,8 @@ def copy_headers(current_dir, build_dir):
 def main():
     if sys.platform == "win32":
         build_windows()
+    elif sys.platform.startswith("linux"):
+        build_linux()
     else:
         build_apple()
 
@@ -505,6 +507,80 @@ def build_windows():
 
     print(f"\n=== Build Complete ===\n")
     print(f"Windows libraries and faust.exe in: {out_dir}")
+    print(f"Header files copied to: {build_dir / 'headers'}")
+    print(f"Faust libraries copied to: {libraries_dir}")
+
+def build_linux():
+    """Builds a static libfaust.a (interpreter backend, position independent, so it can be linked into plug-ins) and
+    the faust executable (C++ backend) for the architecture of the machine it runs on. The release has x86_64 and
+    aarch64, built by two CI jobs"""
+    import argparse
+    import platform
+    parser = argparse.ArgumentParser(description="Build static libfaust and the faust executable for Linux")
+    parser.add_argument("--generator", default="Ninja" if shutil.which("ninja") else "Unix Makefiles", help="CMake generator")
+    args = parser.parse_args()
+
+    arch = platform.machine()  # x86_64 or aarch64, as in CMAKE_SYSTEM_PROCESSOR
+
+    current_dir = Path(os.getcwd()).resolve()
+    faust_build_dir = current_dir / "faust" / "build"
+    build_dir = current_dir / "build"
+    if build_dir.exists():
+        shutil.rmtree(build_dir)
+    build_dir.mkdir(parents=True)
+
+    copy_headers(current_dir, build_dir)
+    out_dir = build_dir / "linux"
+
+    print(f"Building for Linux {arch}...", flush=True)
+    cmake_build_dir = build_dir / f"linux_{arch}" / "cmake_build"
+    cmake_build_dir.mkdir(parents=True)
+
+    # Faust's CMakeLists puts the outputs in faust/build/lib and faust/build/bin
+    built_lib = faust_build_dir / "lib" / "libfaust.a"
+    built_exe = faust_build_dir / "bin" / "faust"
+    built_lib.unlink(missing_ok=True)
+    built_exe.unlink(missing_ok=True)
+
+    run_checked([
+        "cmake",
+        "-C", str(current_dir / "backend.cmake"),
+        "-C", str(current_dir / "target.cmake"),
+        "-G", args.generator,
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DIOS=OFF",
+        "-DINCLUDE_STATIC=ON",
+        "-DINCLUDE_EXECUTABLE=ON",
+        "-DCPP_BACKEND=COMPILER",  # for the faust executable, which generates C++ for compiled iPlug2 builds
+        "-DINCLUDE_DYNAMIC=OFF",
+        "-DINCLUDE_OSC=OFF",
+        "-DINCLUDE_HTTP=OFF",
+        "-DINCLUDE_ITP=OFF",
+        "-DINCLUDE_EMCC=OFF",
+        "-DINCLUDE_WASM_GLUE=OFF",
+        # The executable shouldn't need the libstdc++ of the machine it was built on
+        "-DCMAKE_EXE_LINKER_FLAGS=-static-libstdc++ -static-libgcc",
+        str(faust_build_dir),
+    ], cwd=cmake_build_dir)
+
+    run_checked(["cmake", "--build", str(cmake_build_dir), "--parallel", "--target", "staticlib", "faust"])
+
+    for built in [built_lib, built_exe]:
+        if not built.exists():
+            raise FileNotFoundError(f"{built} was not built")
+
+    (out_dir / "lib" / arch).mkdir(parents=True)
+    (out_dir / "bin" / arch).mkdir(parents=True)
+    shutil.copy(built_lib, out_dir / "lib" / arch / "libfaust.a")
+    shutil.copy(built_exe, out_dir / "bin" / arch / "faust")
+    # Debug info isn't needed, and makes the archive much bigger
+    run_checked(["strip", "--strip-debug", str(out_dir / "lib" / arch / "libfaust.a")])
+    run_checked(["strip", str(out_dir / "bin" / arch / "faust")])
+
+    libraries_dir = copy_faust_libraries(current_dir, build_dir)
+
+    print(f"\n=== Build Complete ===\n")
+    print(f"Linux library and faust executable in: {out_dir}")
     print(f"Header files copied to: {build_dir / 'headers'}")
     print(f"Faust libraries copied to: {libraries_dir}")
 

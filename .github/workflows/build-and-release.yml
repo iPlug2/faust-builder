@@ -235,8 +235,85 @@ jobs:
           path: build/libfaust-windows.tar.gz
           retention-days: 30
 
+  # One job per architecture, each builds natively on the oldest available Ubuntu, so that the faust executable runs
+  # on older distributions (glibc) too. The release job merges both into libfaust-linux.tar.gz
+  build-linux:
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Check out the Faust libraries
+        run: git -C faust submodule update --init libraries
+
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Build libfaust for Linux
+        run: python3 build.py
+
+      # Check the architecture, that libfaust.a is position independent (it is linked into plug-ins), that it links
+      # and compiles a DSP with the interpreter, and that the faust executable runs and finds the Faust libraries
+      - name: Verify library and faust executable
+        run: |
+          set -euo pipefail
+          ARCH=${{ matrix.arch }}
+          LIB=build/linux/lib/$ARCH/libfaust.a
+          FAUST=build/linux/bin/$ARCH/faust
+          test -f "$LIB" && test -x "$FAUST"
+          [ "$(uname -m)" = "$ARCH" ]
+          ls -la "$LIB" "$FAUST"
+
+          mkdir -p test
+          printf 'import("stdfaust.lib"); process = fi.lowpass(2, 1000);\n' > test/test.dsp
+          "$FAUST" --version
+          "$FAUST" -I build/libraries/faust -lang cpp -o test/test.cpp test/test.dsp
+          # It must not need the build machine's libstdc++
+          if ldd "$FAUST" | grep -q 'libstdc++'; then echo "::error::faust links libstdc++ dynamically"; exit 1; fi
+
+          cat > test/test.cpp <<'CPP'
+          #include <iostream>
+          #include <string>
+          #include "faust/dsp/interpreter-dsp.h"
+          int main(int argc, char** argv)
+          {
+            const char* args[] = {"-I", argv[1]};
+            std::string error;
+            auto* factory = createInterpreterDSPFactoryFromString("test", "import(\"stdfaust.lib\"); process = fi.lowpass(2, 1000);", 2, args, error);
+            if (!factory) { std::cerr << error << std::endl; return 1; }
+            dsp* d = factory->createDSPInstance();
+            d->init(44100);
+            std::cout << d->getNumInputs() << " in, " << d->getNumOutputs() << " out" << std::endl;
+            delete d;
+            deleteInterpreterDSPFactory(factory);
+            return 0;
+          }
+          CPP
+          # Linked into a shared library first, which fails if libfaust.a isn't position independent
+          echo 'void test() {}' > test/empty.cpp
+          g++ -shared -fPIC -o test/libtest.so test/empty.cpp -Wl,--whole-archive "$LIB" -Wl,--no-whole-archive
+          g++ -std=c++17 -Ibuild/headers -o test/test test/test.cpp "$LIB" -lpthread -ldl
+          ./test/test build/libraries/faust
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libfaust-linux-${{ matrix.arch }}
+          path: build/linux
+          retention-days: 30
+
   release:
-    needs: [build-apple, build-windows]
+    needs: [build-apple, build-windows, build-linux]
     if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
     runs-on: ubuntu-latest
     permissions:
@@ -249,6 +326,16 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # The Linux artifacts of both architectures were merged into artifacts/lib/<arch> and artifacts/bin/<arch>.
+      # Package them as linux/lib/<arch>/libfaust.a and linux/bin/<arch>/faust
+      - name: Package Linux libraries
+        run: |
+          mkdir linux
+          mv artifacts/lib artifacts/bin linux/
+          test -f linux/lib/x86_64/libfaust.a && test -f linux/lib/aarch64/libfaust.a
+          chmod +x linux/bin/*/faust   # artifacts don't keep file permissions
+          tar -czf artifacts/libfaust-linux.tar.gz linux
+
       - name: List artifacts
         run: ls -la artifacts
 
@@ -258,12 +345,13 @@ jobs:
           files: |
             artifacts/LibFaust.xcframework.zip
             artifacts/libfaust-windows.tar.gz
+            artifacts/libfaust-linux.tar.gz
             artifacts/libfaust-headers.tar.gz
             artifacts/faust-libraries.tar.gz
           body: |
             ## LibFaust
 
-            Pre-built libfaust static libraries for Apple platforms and Windows.
+            Pre-built libfaust static libraries for Apple platforms, Windows and Linux.
 
             **Faust Compiler Version:** ${{ needs.build-apple.outputs.faust_version }}
 
@@ -277,10 +365,11 @@ jobs:
             | `xros-arm64` | arm64 | visionOS 1.0 |
             | `xros-arm64-simulator` | arm64 | visionOS 1.0 |
             | `windows/lib/<arch>` | x64, ARM64, ARM64EC | Windows, MSVC (VS2022) static runtime |
+            | `linux/lib/<arch>` | x86_64, aarch64 | Linux, built on Ubuntu 22.04 (GCC 11, glibc 2.35) |
 
             ### Backends Enabled
             - Interpreter backend (static)
-            - C++ backend in the Windows `faust.exe`
+            - C++ backend in the Windows `faust.exe` and the Linux `faust` executables
 
             ### Usage
 
@@ -297,6 +386,9 @@ jobs:
               `windows/lib/<arch>/libfaust.lib` (`/MT`) and `libfaustd.lib`
               (`/MTd`, for Debug builds) for x64, ARM64 and ARM64EC, and
               `windows/bin/faust.exe` (x64, C++ backend). Also link `Ws2_32.lib`.
+            - **Linux:** extract `libfaust-linux.tar.gz` to get
+              `linux/lib/<arch>/libfaust.a` (position independent) and
+              `linux/bin/<arch>/faust` (C++ backend) for x86_64 and aarch64.
             - **Faust libraries:** extract `faust-libraries.tar.gz` to get a
               `faust/` folder with `stdfaust.lib` etc., matching this libfaust
               version. Pass its path to the compiler with `-I` (the interpreter

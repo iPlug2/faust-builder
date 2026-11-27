@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Build system that packages libfaust (the [Faust](https://github.com/grame-cncm/faust) DSP compiler) as static libraries: an Apple `XCFramework`, and MSVC libraries (plus `faust.exe`) for Windows. The Faust source is a Git submodule; everything else in this repo is the cross-compilation harness around Faust's own CMake build.
+Build system that packages libfaust (the [Faust](https://github.com/grame-cncm/faust) DSP compiler) as static libraries: an Apple `XCFramework`, MSVC libraries (plus `faust.exe`) for Windows, and `libfaust.a` (plus the `faust` executable) for Linux. The Faust source is a Git submodule; everything else in this repo is the cross-compilation harness around Faust's own CMake build.
 
 Consumer of the output is iPlug2 — hence the `iplug2-midi.h` header and the `iPlug2/faust` fork.
 
@@ -37,6 +37,15 @@ Gotchas:
 - Faust's CMakeLists writes the outputs to `faust/build/lib` and `faust/build/bin` in the submodule, shared by all architectures, so `build.py` copies each one out right after building it.
 - Don't pass `MSVC_STATIC=ON`: `faust/build/misc/msvc_static_runtime.cmake` replaces `CMAKE_CXX_FLAGS_RELEASE` with just `/MT`, dropping optimization. The runtime is set in the generated `platform.cmake` instead (CMake policy CMP0091 is OLD at Faust's `cmake_minimum_required`, so `CMAKE_MSVC_RUNTIME_LIBRARY` is ignored).
 - `CPP_BACKEND ON` in `backend.cmake` doesn't include the backend anywhere: `scan_backends` looks for `COMPILER`/`STATIC`/... in the value. The Windows build passes `-DCPP_BACKEND=COMPILER` for `faust.exe`.
+
+### Linux
+
+On Linux, `build.py` builds for the architecture of the machine it runs on (no cross-compiling; CI runs it on an x86_64 and an aarch64 runner). Output in `build/linux/`:
+
+- `lib/<arch>/libfaust.a` (`x86_64` or `aarch64`, as in `uname -m` / `CMAKE_SYSTEM_PROCESSOR`): interpreter backend, position independent (Faust's `staticlib` target sets it) so that it can be linked into plug-ins, hidden visibility, debug info stripped.
+- `bin/<arch>/faust` (C++ backend), linked with `-static-libstdc++ -static-libgcc` so it only depends on glibc. iPlug2's `download-faust.sh` installs the one for the host as `bin/faust`, next to `share/faust`.
+
+CI builds on Ubuntu 22.04 so that the executable runs with older glibc versions. Like the Windows path it uses `run_checked()` and copies the outputs out of `faust/build/lib` and `faust/build/bin`.
 
 ### Build gotchas
 
@@ -84,6 +93,6 @@ To pull in upstream Faust releases, rebase `ios-tweaks` onto `origin/master-dev`
 
 ## CI / release
 
-`.github/workflows/build-and-release.yml` has a `build-apple` job on `macos-26` (needs the visionOS SDK) and a `build-windows` job on `windows-2022`; the `release` job needs both. Triggered by pushing a `v*.*.*` tag, or manually via `workflow_dispatch`. It runs `build.py` on each, zips the XCFramework, tars the Windows libraries (`libfaust-windows.tar.gz`), the headers and the Faust libraries, and attaches them to a GitHub release. The Windows job checks each library's machine type and C runtime with `dumpbin`, and that `faust.exe` compiles a DSP that imports `stdfaust.lib`. The release body's Faust version is scraped from `set (VERSION` in `faust/build/CMakeLists.txt` — if that line's format changes upstream, the version string silently becomes empty.
+`.github/workflows/build-and-release.yml` has a `build-apple` job on `macos-26` (needs the visionOS SDK), a `build-windows` job on `windows-2022` and a `build-linux` job (a matrix of `ubuntu-22.04` and `ubuntu-22.04-arm`); the `release` job needs all of them, and merges the two Linux artifacts into `libfaust-linux.tar.gz`. Triggered by pushing a `v*.*.*` tag, or manually via `workflow_dispatch`. It runs `build.py` on each, zips the XCFramework, tars the Windows libraries (`libfaust-windows.tar.gz`), the headers and the Faust libraries, and attaches them to a GitHub release. The Windows job checks each library's machine type and C runtime with `dumpbin`, and that `faust.exe` compiles a DSP that imports `stdfaust.lib`. The release body's Faust version is scraped from `set (VERSION` in `faust/build/CMakeLists.txt` — if that line's format changes upstream, the version string silently becomes empty.
 
 When modifying the workflow, check the result with `gh run list`.
