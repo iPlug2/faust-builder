@@ -106,6 +106,14 @@ jobs:
             fail=1
           fi
 
+          # Faust standard libraries, needed by the interpreter at runtime
+          if [ ! -f build/libraries/faust/stdfaust.lib ]; then
+            echo "::error::Faust libraries missing from build/libraries/faust"
+            fail=1
+          else
+            echo "libraries: $(find build/libraries/faust -name '*.lib' | wc -l | tr -d ' ') .lib file(s)"
+          fi
+
           codesign -v "$XCF"
           exit $fail
 
@@ -116,6 +124,8 @@ jobs:
           zip -r LibFaust.xcframework.zip LibFaust.xcframework
           # Create headers tarball
           tar -czf libfaust-headers.tar.gz headers/
+          # Create Faust libraries tarball (extracts to faust/, like share/faust in an installation)
+          tar -czf faust-libraries.tar.gz -C libraries faust
           # List artifacts
           ls -la *.zip *.tar.gz
 
@@ -133,6 +143,13 @@ jobs:
           path: build/libfaust-headers.tar.gz
           retention-days: 30
 
+      - name: Upload Faust libraries artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: faust-libraries
+          path: build/faust-libraries.tar.gz
+          retention-days: 30
+
       - name: Get Faust version
         id: faust_version
         run: |
@@ -147,6 +164,7 @@ jobs:
           files: |
             build/LibFaust.xcframework.zip
             build/libfaust-headers.tar.gz
+            build/faust-libraries.tar.gz
           body: |
             ## LibFaust XCFramework
 
@@ -170,7 +188,7 @@ jobs:
 
             ### Usage
 
-            Two separate downloads — the XCFramework carries no headers.
+            Three separate downloads — the XCFramework carries no headers.
 
             - **Headers:** extract `libfaust-headers.tar.gz` and add the
               resulting `headers/` directory to your include path.
@@ -179,6 +197,10 @@ jobs:
               -create-xcframework`), e.g.
               `LibFaust.xcframework/ios-arm64/ios_libfaust.a`. Link the
               `.xcframework` itself and let Xcode select the slice.
+            - **Faust libraries:** extract `faust-libraries.tar.gz` to get a
+              `faust/` folder with `stdfaust.lib` etc., matching this libfaust
+              version. Pass its path to the compiler with `-I` (the interpreter
+              needs it at runtime to compile DSP code that imports libraries).
           draft: false
           generate_release_notes: true
           # github.ref_name is the branch name on workflow_dispatch, so a bare

@@ -14,6 +14,37 @@ def run_command(command, cwd=None, env=None):
         return None
     return result.stdout.strip()
 
+def copy_faust_libraries(current_dir, build_dir):
+    """Copy the Faust standard libraries (stdfaust.lib etc.) that match this libfaust, laid out like
+    an installation's share/faust folder. The interpreter needs them at runtime to compile DSP code."""
+    src = current_dir / "faust" / "libraries"
+    dst = build_dir / "libraries" / "faust"
+    if dst.exists():
+        shutil.rmtree(dst)
+    dst.mkdir(parents=True)
+
+    if not (src / "stdfaust.lib").exists():
+        raise FileNotFoundError(f"Faust libraries not found in {src} (is the faustlibraries submodule checked out?)")
+
+    for lib in src.glob("*.lib"):
+        shutil.copy(lib, dst / lib.name)
+
+    # Subfolders imported by the top-level libraries (dx7.lib imports dx7/, the old*.lib compatibility libraries import old/)
+    for subdir in ["dx7", "old"]:
+        (dst / subdir).mkdir()
+        for lib in (src / subdir).glob("*.lib"):
+            shutil.copy(lib, dst / subdir / lib.name)
+
+    for extra in ["README.md", "licenses"]:
+        if (src / extra).is_dir():
+            shutil.copytree(src / extra, dst / extra)
+        elif (src / extra).exists():
+            shutil.copy(src / extra, dst / extra)
+
+    count = len(list(dst.rglob("*.lib")))
+    print(f"Copied {count} Faust library files to {dst}")
+    return dst
+
 def main():
     # Get the absolute path to the current directory
     current_dir = Path(os.getcwd()).resolve()
@@ -349,9 +380,12 @@ def main():
         faust_dsp_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy(libfaust_header, faust_dsp_dir / "libfaust.h")
     
+    libraries_dir = copy_faust_libraries(current_dir, build_dir)
+
     print(f"\n=== Build Complete ===\n")
     print(f"XCFramework created at: {build_dir}/LibFaust.xcframework")
     print(f"Header files copied to: {include_dir}")
+    print(f"Faust libraries copied to: {libraries_dir}")
 
 if __name__ == "__main__":
     main()

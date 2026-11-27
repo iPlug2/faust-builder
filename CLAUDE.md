@@ -14,7 +14,7 @@ Consumer of the output is iPlug2 — hence the `iplug2-midi.h` header and the `i
 ./build.py          # or: python3 build.py
 ```
 
-Output: `build/LibFaust.xcframework` (ad-hoc code signed) plus `build/headers/` and `build/include/`.
+Output: `build/LibFaust.xcframework` (ad-hoc code signed) plus `build/headers/`, `build/include/` and `build/libraries/faust/` (the Faust standard libraries from the `faust/libraries` submodule, which the interpreter needs at runtime; released as `faust-libraries.tar.gz`).
 
 There is no test suite and no lint config. Verification is "does the XCFramework build and contain all five slices":
 
