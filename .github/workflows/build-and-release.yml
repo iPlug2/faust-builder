@@ -25,6 +25,11 @@ jobs:
         with:
           submodules: true
 
+      # faust/libraries (the Faust standard libraries, shipped as faust-libraries.tar.gz) is a submodule of the
+      # faust submodule. Only check out that one, not faust's other nested submodules
+      - name: Check out the Faust libraries
+        run: git -C faust submodule update --init libraries
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
