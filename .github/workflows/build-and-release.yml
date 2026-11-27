@@ -16,8 +16,10 @@ on:
           - 'false'
 
 jobs:
-  build:
+  build-apple:
     runs-on: macos-26  # Apple Silicon runner with current visionOS SDK support
+    outputs:
+      faust_version: ${{ steps.faust_version.outputs.version }}
 
     steps:
       - name: Checkout repository
@@ -162,20 +164,108 @@ jobs:
           echo "version=${FAUST_VERSION}" >> $GITHUB_OUTPUT
           echo "Faust version: ${FAUST_VERSION}"
 
+  build-windows:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Check out the Faust libraries
+        run: git -C faust submodule update --init libraries
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build libfaust for Windows
+        run: python build.py
+
+      # Check each library's architecture and C runtime (libfaust.lib: /MT, libfaustd.lib: /MTd), and that
+      # faust.exe runs and finds the Faust libraries
+      - name: Verify libraries and faust.exe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = (Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1).FullName
+          $fail = $false
+
+          $machines = @{ "x64" = "8664 machine \(x64\)"; "ARM64" = "AA64 machine \(ARM64\)"; "ARM64EC" = "A641 machine \(ARM64EC\)" }
+          $runtimes = @{ "libfaust.lib" = "LIBCMT"; "libfaustd.lib" = "LIBCMTD" }
+
+          foreach ($arch in $machines.Keys) {
+            foreach ($lib in $runtimes.Keys) {
+              $path = "build/windows/lib/$arch/$lib"
+              if (-not (Test-Path $path)) { Write-Output "::error::missing $path"; $fail = $true; continue }
+
+              $headers = & $dumpbin /headers $path | Out-String
+              $directives = & $dumpbin /directives $path | Out-String
+              $wantRuntime = $runtimes[$lib]
+              $gotRuntimes = [regex]::Matches($directives, "/DEFAULTLIB:`"?(LIBCMTD?)`"?", "IgnoreCase") | ForEach-Object { $_.Groups[1].Value.ToUpper() } | Sort-Object -Unique
+
+              if ($headers -notmatch $machines[$arch]) { Write-Output "::error::$path is not $arch"; $fail = $true }
+              elseif ("$gotRuntimes" -ne $wantRuntime) { Write-Output "::error::$path runtime: want $wantRuntime got $gotRuntimes"; $fail = $true }
+              else { Write-Output "ok: $path ($arch, $wantRuntime, $([math]::Round((Get-Item $path).Length / 1MB)) MB)" }
+            }
+          }
+
+          New-Item -ItemType Directory -Force test | Out-Null
+          Set-Content -Path test/test.dsp -Value 'import("stdfaust.lib"); process = fi.lowpass(2, 1000);'
+          & build/windows/bin/faust.exe --version
+          & build/windows/bin/faust.exe -I build/libraries/faust -lang cpp -o test/test.cpp test/test.dsp
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error::faust.exe failed to compile test.dsp"; $fail = $true }
+
+          if ($fail) { exit 1 }
+
+      - name: Package Windows libraries
+        shell: bash
+        run: |
+          # Extracts to windows/lib/<arch>/libfaust(d).lib and windows/bin/faust.exe
+          tar -czf build/libfaust-windows.tar.gz -C build windows
+          ls -la build/*.tar.gz
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libfaust-windows
+          path: build/libfaust-windows.tar.gz
+          retention-days: 30
+
+  release:
+    needs: [build-apple, build-windows]
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts
+
       - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            build/LibFaust.xcframework.zip
-            build/libfaust-headers.tar.gz
-            build/faust-libraries.tar.gz
+            artifacts/LibFaust.xcframework.zip
+            artifacts/libfaust-windows.tar.gz
+            artifacts/libfaust-headers.tar.gz
+            artifacts/faust-libraries.tar.gz
           body: |
-            ## LibFaust XCFramework
+            ## LibFaust
 
-            Pre-built libfaust static library for Apple platforms.
+            Pre-built libfaust static libraries for Apple platforms and Windows.
 
-            **Faust Compiler Version:** ${{ steps.faust_version.outputs.version }}
+            **Faust Compiler Version:** ${{ needs.build-apple.outputs.faust_version }}
 
             ### Platforms Included
 
@@ -186,22 +276,27 @@ jobs:
             | `ios-arm64-simulator` | arm64 | iOS 15.0 |
             | `xros-arm64` | arm64 | visionOS 1.0 |
             | `xros-arm64-simulator` | arm64 | visionOS 1.0 |
+            | `windows/lib/<arch>` | x64, ARM64, ARM64EC | Windows, MSVC (VS2022) static runtime |
 
             ### Backends Enabled
-            - C++ backend
             - Interpreter backend (static)
+            - C++ backend in the Windows `faust.exe`
 
             ### Usage
 
-            Three separate downloads — the XCFramework carries no headers.
+            Headers and Faust libraries are separate downloads, shared by all platforms.
 
             - **Headers:** extract `libfaust-headers.tar.gz` and add the
               resulting `headers/` directory to your include path.
-            - **Library:** extract `LibFaust.xcframework.zip`. Each slice uses a
+            - **Apple:** extract `LibFaust.xcframework.zip`. Each slice uses a
               distinct library basename (required by `xcodebuild
               -create-xcframework`), e.g.
               `LibFaust.xcframework/ios-arm64/ios_libfaust.a`. Link the
               `.xcframework` itself and let Xcode select the slice.
+            - **Windows:** extract `libfaust-windows.tar.gz` to get
+              `windows/lib/<arch>/libfaust.lib` (`/MT`) and `libfaustd.lib`
+              (`/MTd`, for Debug builds) for x64, ARM64 and ARM64EC, and
+              `windows/bin/faust.exe` (x64, C++ backend). Also link `Ws2_32.lib`.
             - **Faust libraries:** extract `faust-libraries.tar.gz` to get a
               `faust/` folder with `stdfaust.lib` etc., matching this libfaust
               version. Pass its path to the compiler with `-I` (the interpreter
@@ -211,4 +306,4 @@ jobs:
           # github.ref_name is the branch name on workflow_dispatch, so a bare
           # `github.ref_name || ...` fallback never fires and tags the release
           # after the branch. Only trust ref_name when the ref really is a tag.
-          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', steps.faust_version.outputs.version) }}
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', needs.build-apple.outputs.faust_version) }}

@@ -3,6 +3,7 @@
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -45,16 +46,8 @@ def copy_faust_libraries(current_dir, build_dir):
     print(f"Copied {count} Faust library files to {dst}")
     return dst
 
-def main():
-    # Get the absolute path to the current directory
-    current_dir = Path(os.getcwd()).resolve()
-    
-    build_dir = current_dir / "build"
-    if build_dir.exists():
-        shutil.rmtree(build_dir)
-    build_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Create headers directory and copy headers
+def copy_headers(current_dir, build_dir):
+    """Copy libfaust.h and the Faust architecture headers that consumers need to build_dir/headers/faust"""
     headers_dir = build_dir / "headers"
     headers_dir.mkdir(parents=True, exist_ok=True)
     
@@ -138,6 +131,25 @@ def main():
         else:
             print(f"Warning: Header file {header_path} not found")
     
+    return headers_dir, libfaust_header
+
+def main():
+    if sys.platform == "win32":
+        build_windows()
+    else:
+        build_apple()
+
+def build_apple():
+    # Get the absolute path to the current directory
+    current_dir = Path(os.getcwd()).resolve()
+    
+    build_dir = current_dir / "build"
+    if build_dir.exists():
+        shutil.rmtree(build_dir)
+    build_dir.mkdir(parents=True, exist_ok=True)
+    
+    headers_dir, libfaust_header = copy_headers(current_dir, build_dir)
+
     # Define platforms to build for
     platforms = [
         {
@@ -385,6 +397,115 @@ def main():
     print(f"\n=== Build Complete ===\n")
     print(f"XCFramework created at: {build_dir}/LibFaust.xcframework")
     print(f"Header files copied to: {include_dir}")
+    print(f"Faust libraries copied to: {libraries_dir}")
+
+def run_checked(command, cwd=None):
+    """Like run_command(), but streams the output and stops the build on failure"""
+    print(f"Running: {' '.join([str(c) for c in command])}", flush=True)
+    subprocess.run(command, cwd=cwd, check=True)
+
+# Windows architectures (Visual Studio generator platforms). ARM64EC is built natively rather than relying on
+# x64 code in an ARM64EC binary, so that a plug-in built for ARM64EC runs the interpreter at native speed
+WINDOWS_ARCHS = ["x64", "ARM64", "ARM64EC"]
+
+# Both libraries use the static C runtime, as iPlug2 does. libfaustd.lib is for Debug builds (/MTd), which can't link
+# a /MT library. It is optimized and has no debug info: it only has to match the runtime and _ITERATOR_DEBUG_LEVEL
+WINDOWS_FLAVOURS = [
+    {"config": "Release", "lib": "libfaust.lib", "flags": "/MT /O2 /Ob2 /DNDEBUG"},
+    {"config": "Debug", "lib": "libfaustd.lib", "flags": "/MTd /O2 /Ob2 /DNDEBUG"},
+]
+
+def build_windows():
+    import argparse
+    parser = argparse.ArgumentParser(description="Build static libfaust (and faust.exe) for Windows with MSVC")
+    parser.add_argument("--arch", action="append", choices=WINDOWS_ARCHS,
+                        help="architecture to build (repeatable, default: all). faust.exe is built with x64")
+    parser.add_argument("--generator", default="Visual Studio 17 2022", help="CMake Visual Studio generator")
+    args = parser.parse_args()
+    archs = args.arch or WINDOWS_ARCHS
+
+    current_dir = Path(os.getcwd()).resolve()
+    faust_build_dir = current_dir / "faust" / "build"
+    build_dir = current_dir / "build"
+    if build_dir.exists():
+        shutil.rmtree(build_dir)
+    build_dir.mkdir(parents=True)
+
+    copy_headers(current_dir, build_dir)
+    out_dir = build_dir / "windows"
+
+    for arch in archs:
+        print(f"Building for Windows {arch}...", flush=True)
+        arch_build_dir = build_dir / f"windows_{arch}"
+        cmake_build_dir = arch_build_dir / "cmake_build"
+        cmake_build_dir.mkdir(parents=True)
+
+        build_exe = arch == "x64"
+
+        cmake_cache_file = arch_build_dir / "platform.cmake"
+        with open(cmake_cache_file, "w") as f:
+            f.write('set(CMAKE_CONFIGURATION_TYPES "Release;Debug" CACHE STRING "" FORCE)\n')
+            f.write('set(CMAKE_C_FLAGS "/DWIN32 /D_WINDOWS /MP" CACHE STRING "" FORCE)\n')
+            f.write('set(CMAKE_CXX_FLAGS "/DWIN32 /D_WINDOWS /EHsc /GR /MP /bigobj" CACHE STRING "" FORCE)\n')
+            for flavour in WINDOWS_FLAVOURS:
+                config = flavour["config"].upper()
+                f.write(f'set(CMAKE_C_FLAGS_{config} "{flavour["flags"]}" CACHE STRING "" FORCE)\n')
+                f.write(f'set(CMAKE_CXX_FLAGS_{config} "{flavour["flags"]}" CACHE STRING "" FORCE)\n')
+
+        run_checked([
+            "cmake",
+            "-C", str(current_dir / "backend.cmake"),
+            "-C", str(current_dir / "target.cmake"),
+            "-C", str(cmake_cache_file),
+            "-G", args.generator,
+            "-A", arch,
+            "-DIOS=OFF",
+            "-DMSVC_STATIC=OFF",  # its flags replace the optimization flags, the runtime is set above instead
+            "-DINCLUDE_STATIC=ON",
+            f"-DINCLUDE_EXECUTABLE={'ON' if build_exe else 'OFF'}",
+            "-DCPP_BACKEND=COMPILER",  # for faust.exe, which generates C++ for compiled iPlug2 builds
+            "-DINCLUDE_DYNAMIC=OFF",
+            "-DINCLUDE_OSC=OFF",
+            "-DINCLUDE_HTTP=OFF",
+            "-DINCLUDE_ITP=OFF",
+            "-DINCLUDE_EMCC=OFF",
+            "-DINCLUDE_WASM_GLUE=OFF",
+            str(faust_build_dir),
+        ], cwd=cmake_build_dir)
+
+        # Faust's CMakeLists puts the outputs in faust/build/lib and faust/build/bin (shared by all architectures),
+        # so each one is copied out as soon as it is built
+        lib_out_dir = out_dir / "lib" / arch
+        lib_out_dir.mkdir(parents=True)
+
+        for flavour in WINDOWS_FLAVOURS:
+            config = flavour["config"]
+            built_lib = faust_build_dir / "lib" / ("libfaust.lib" if config == "Release" else f"{config}/libfaust.lib")
+            built_lib.unlink(missing_ok=True)
+
+            targets = ["staticlib"]
+            if build_exe and config == "Release":
+                targets.append("faust")
+
+            run_checked(["cmake", "--build", str(cmake_build_dir), "--config", config, "--parallel",
+                         "--target", *targets])
+
+            if not built_lib.exists():
+                raise FileNotFoundError(f"{built_lib} was not built")
+            shutil.copy(built_lib, lib_out_dir / flavour["lib"])
+
+            if "faust" in targets:
+                built_exe = faust_build_dir / "bin" / config / "faust.exe"
+                if not built_exe.exists():
+                    raise FileNotFoundError(f"{built_exe} was not built")
+                (out_dir / "bin").mkdir(parents=True, exist_ok=True)
+                shutil.copy(built_exe, out_dir / "bin" / "faust.exe")
+
+    libraries_dir = copy_faust_libraries(current_dir, build_dir)
+
+    print(f"\n=== Build Complete ===\n")
+    print(f"Windows libraries and faust.exe in: {out_dir}")
+    print(f"Header files copied to: {build_dir / 'headers'}")
     print(f"Faust libraries copied to: {libraries_dir}")
 
 if __name__ == "__main__":

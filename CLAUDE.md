@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Build system that packages libfaust (the [Faust](https://github.com/grame-cncm/faust) DSP compiler) as an Apple `XCFramework` of static libraries. The Faust source is a Git submodule; everything else in this repo is the cross-compilation harness around Faust's own CMake build.
+Build system that packages libfaust (the [Faust](https://github.com/grame-cncm/faust) DSP compiler) as static libraries: an Apple `XCFramework`, and MSVC libraries (plus `faust.exe`) for Windows. The Faust source is a Git submodule; everything else in this repo is the cross-compilation harness around Faust's own CMake build.
 
 Consumer of the output is iPlug2 — hence the `iplug2-midi.h` header and the `iPlug2/faust` fork.
 
@@ -23,6 +23,20 @@ xcodebuild -create-xcframework ...   # done by build.py
 plutil -p build/LibFaust.xcframework/Info.plist
 lipo -info build/LibFaust.xcframework/macos-arm64_x86_64/macos_libfaust.a
 ```
+
+### Windows
+
+On Windows, `build.py` builds with MSVC (Visual Studio generator, default `Visual Studio 17 2022`, override with `--generator`) instead. Output in `build/windows/`:
+
+- `lib/<arch>/libfaust.lib` (`/MT`) and `lib/<arch>/libfaustd.lib` (`/MTd`) for `x64`, `ARM64` and `ARM64EC`. Both use the static runtime because iPlug2 does; the Debug flavour is optimized with no debug info, it exists only so that `/MTd` Debug builds can link (runtime and `_ITERATOR_DEBUG_LEVEL` must match).
+- `bin/faust.exe` (x64 only, C++ backend), used by iPlug2 to generate C++ for release builds. It finds the Faust libraries in `../share/faust` relative to itself, which is how iPlug2 installs them.
+
+`python build.py --arch x64` builds one architecture (repeatable). Unlike the Apple path, the Windows path fails on the first error (`run_checked()`).
+
+Gotchas:
+- Faust's CMakeLists writes the outputs to `faust/build/lib` and `faust/build/bin` in the submodule, shared by all architectures, so `build.py` copies each one out right after building it.
+- Don't pass `MSVC_STATIC=ON`: `faust/build/misc/msvc_static_runtime.cmake` replaces `CMAKE_CXX_FLAGS_RELEASE` with just `/MT`, dropping optimization. The runtime is set in the generated `platform.cmake` instead (CMake policy CMP0091 is OLD at Faust's `cmake_minimum_required`, so `CMAKE_MSVC_RUNTIME_LIBRARY` is ignored).
+- `CPP_BACKEND ON` in `backend.cmake` doesn't include the backend anywhere: `scan_backends` looks for `COMPILER`/`STATIC`/... in the value. The Windows build passes `-DCPP_BACKEND=COMPILER` for `faust.exe`.
 
 ### Build gotchas
 
@@ -70,6 +84,6 @@ To pull in upstream Faust releases, rebase `ios-tweaks` onto `origin/master-dev`
 
 ## CI / release
 
-`.github/workflows/build-and-release.yml` runs on `macos-15` (needs the visionOS SDK). Triggered by pushing a `v*.*.*` tag, or manually via `workflow_dispatch`. It runs `build.py`, zips the XCFramework, tars the headers, and attaches both to a GitHub release. The release body's Faust version is scraped from `set (VERSION` in `faust/build/CMakeLists.txt` — if that line's format changes upstream, the version string silently becomes empty.
+`.github/workflows/build-and-release.yml` has a `build-apple` job on `macos-26` (needs the visionOS SDK) and a `build-windows` job on `windows-2022`; the `release` job needs both. Triggered by pushing a `v*.*.*` tag, or manually via `workflow_dispatch`. It runs `build.py` on each, zips the XCFramework, tars the Windows libraries (`libfaust-windows.tar.gz`), the headers and the Faust libraries, and attaches them to a GitHub release. The Windows job checks each library's machine type and C runtime with `dumpbin`, and that `faust.exe` compiles a DSP that imports `stdfaust.lib`. The release body's Faust version is scraped from `set (VERSION` in `faust/build/CMakeLists.txt` — if that line's format changes upstream, the version string silently becomes empty.
 
 When modifying the workflow, check the result with `gh run list`.
